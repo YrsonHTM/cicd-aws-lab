@@ -2,133 +2,68 @@ name: Continuous Integration
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 env:
-  DOCKERHUB_USERNAME: brendisas
-  SONAR_HOST_URL: http://localhost:9000
+  DOCKERHUB_USERNAME: yersonhtm
 
 jobs:
-  
-  code:
-    name: Code
-    runs-on: [self-hosted]
+  ci:
+    name: Test, build and publish images
+    runs-on: self-hosted
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-  build:
-    name: Build
-    runs-on: [self-hosted]
-    needs: code
-    steps:
+      - name: Check Docker
+        run: docker version
+
+      - name: Run backend tests
+        run: |
+          docker run --rm \
+            -v "$PWD/github/backend:/app" \
+            -w /app \
+            python:3.12-slim \
+            sh -c "pip install --no-cache-dir -r requirements.txt && pytest -p no:cacheprovider"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build database
-        uses: docker/build-push-action@v6
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
         with:
-          context: ./github/db
-          push: false
-          load: true
-          tags: ${{ env.DOCKERHUB_USERNAME }}/database:${{ github.sha }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build backend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./github/backend
-          push: false
-          load: true
-          tags: ${{ env.DOCKERHUB_USERNAME }}/backend:${{ github.sha }}
-      
-      - name: Build frontend
+      - name: Build and push frontend
         uses: docker/build-push-action@v6
         with:
           context: ./github/frontend
-          push: false
-          load: true
-          tags: ${{ env.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}
+            ${{ env.DOCKERHUB_USERNAME }}/frontend:latest
 
-  test:
-    name: Test
-    runs-on: [self-hosted]
-    needs: build
-    environment: development
-
-    steps:
-      - name: Run backend tests with coverage
-        run: |
-          RUNNER_UID=$(id -u)
-          RUNNER_GID=$(id -g)
-
-          docker run --rm -v "$PWD/github/backend:/app" -w /app -e PYTHONPATH=/app -e RUNNER_UID="$RUNNER_UID" -e RUNNER_GID="$RUNNER_GID" \
-          python:3.12-slim \
-          sh -c "
-            pip install -r requirements.txt &&
-            pytest -p no:cacheprovider --cov=app --cov-report=term-missing --cov-report=xml
-            TEST_EXIT=\$?;
-            chown -R \$RUNNER_UID:\$RUNNER_GID /app;
-            exit \$TEST_EXIT
-          "
-
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v6
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
         with:
-          projectBaseDir: github/backend
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+          context: ./github/backend
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.DOCKERHUB_USERNAME }}/backend:${{ github.sha }}
+            ${{ env.DOCKERHUB_USERNAME }}/backend:latest
 
-  release:
-    name: Release
-    runs-on: [self-hosted]
-    needs: test
-
-    outputs:
-      image_tag: ${{ steps.set_tag.outputs.image_tag }}
-
-    steps:
-      - name: Set image tag
-        id: set_tag
-        run: echo "image_tag=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
-
-      - name: Tag images with date version
-        run: |
-          docker tag ${{ env.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }} ${{ env.DOCKERHUB_USERNAME }}/frontend:${{ steps.set_tag.outputs.image_tag }}
-          docker tag ${{ env.DOCKERHUB_USERNAME }}/backend:${{ github.sha }} ${{ env.DOCKERHUB_USERNAME }}/backend:${{ steps.set_tag.outputs.image_tag }}
-          docker tag ${{ env.DOCKERHUB_USERNAME }}/database:${{ github.sha }} ${{ env.DOCKERHUB_USERNAME }}/database:${{ steps.set_tag.outputs.image_tag }}
-
-      - name: Tag images with last version
-        run: |
-          docker tag ${{ env.DOCKERHUB_USERNAME }}/frontend:${{ steps.set_tag.outputs.image_tag }} ${{ env.DOCKERHUB_USERNAME }}/frontend:latest
-          docker tag ${{ env.DOCKERHUB_USERNAME }}/backend:${{ steps.set_tag.outputs.image_tag }} ${{ env.DOCKERHUB_USERNAME }}/backend:latest
-          docker tag ${{ env.DOCKERHUB_USERNAME }}/database:${{ steps.set_tag.outputs.image_tag }} ${{ env.DOCKERHUB_USERNAME }}/database:latest
-
-  push:
-    name: Push to Docker Hub
-    runs-on: [self-hosted]
-    needs: release
-
-    env:
-      IMAGE_TAG: ${{ needs.release.outputs.image_tag }}
-
-    steps:
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+      - name: Build and push database
+        uses: docker/build-push-action@v6
         with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Push frontend
-        run: |
-          docker push ${{ env.DOCKERHUB_USERNAME }}/frontend:${{ env.IMAGE_TAG }}
-          docker push ${{ env.DOCKERHUB_USERNAME }}/frontend:latest
-
-      - name: Push backend
-        run: |
-          docker push ${{ env.DOCKERHUB_USERNAME }}/backend:${{ env.IMAGE_TAG }}
-          docker push ${{ env.DOCKERHUB_USERNAME }}/backend:latest
-
-      - name: Push database
-        run: |
-          docker push ${{ env.DOCKERHUB_USERNAME }}/database:${{ env.IMAGE_TAG }}
-          docker push ${{ env.DOCKERHUB_USERNAME }}/database:latest
+          context: ./github/db
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.DOCKERHUB_USERNAME }}/database:${{ github.sha }}
+            ${{ env.DOCKERHUB_USERNAME }}/database:latest

@@ -121,37 +121,153 @@ Confirma en GitHub que aparezcan:
 
 ## Fase 2: Preparar Docker Hub
 
-### 2.1 Crear el repositorio de imagenes
+Docker Hub sera el registro donde CI publicara las imagenes y desde donde CD las descargara en las EC2.
 
-En Docker Hub crea estos repositorios bajo tu usuario:
+### 2.1 Crear o confirmar la cuenta
+
+1. Abre [Docker Hub](https://hub.docker.com/).
+2. Selecciona **Sign up** si todavia no tienes cuenta.
+3. Confirma el correo electronico.
+4. Inicia sesion.
+5. Selecciona tu avatar, normalmente en la esquina superior derecha.
+6. Copia exactamente tu **Docker ID**.
+
+El Docker ID no siempre coincide con el correo o con el nombre visible. Guardalo temporalmente con este formato:
 
 ```text
-frontend
-backend
-database
+Docker ID: yersonhtm
 ```
 
-Si tu usuario de Docker Hub es `TU_DOCKERHUB_USER`, las imagenes seran:
+Usaremos ese valor en los nombres de las imagenes. No uses espacios, mayusculas ni el correo electronico.
+
+### 2.2 Crear el repositorio `frontend`
+
+1. En Docker Hub selecciona **My Hub** o **Repositories**.
+2. Selecciona **Create repository**.
+3. En **Repository name**, escribe exactamente:
+
+   ```text
+   frontend
+   ```
+
+4. En **Visibility**, selecciona **Public**.
+5. No agregues un Dockerfile desde Docker Hub.
+6. No selecciones una plantilla de build.
+7. Selecciona **Create**.
+
+El nombre final debe verse asi:
 
 ```text
-TU_DOCKERHUB_USER/frontend
-TU_DOCKERHUB_USER/backend
-TU_DOCKERHUB_USER/database
+yersonhtm/frontend
 ```
 
-### 2.2 Crear un Access Token
+### 2.3 Crear los repositorios restantes
 
-En Docker Hub:
+Repite el mismo procedimiento dos veces:
 
-1. Abre tu perfil.
+1. Selecciona **Create repository**.
+2. Usa el nombre `backend`.
+3. En **Visibility**, selecciona **Public**.
+4. Selecciona **Create**.
+5. Vuelve a seleccionar **Create repository**.
+6. Usa el nombre `database`.
+7. Selecciona **Create**.
+
+Al terminar, en **Repositories** deben aparecer exactamente:
+
+```text
+yersonhtm/frontend
+yersonhtm/backend
+yersonhtm/database
+```
+
+No crees repositorios con nombres como:
+
+```text
+cicd-frontend
+frontend-image
+postgres
+```
+
+El workflow usara los tres nombres anteriores.
+
+### 2.4 Comprobar la visibilidad
+
+Abre cada repositorio y confirma:
+
+- El propietario es tu Docker ID.
+- El nombre coincide exactamente.
+- La visibilidad es `Public`.
+- El repositorio esta vacio.
+- No hay imagenes publicadas todavia.
+
+Que esten vacios es correcto. Las primeras imagenes seran publicadas por GitHub Actions.
+
+Los repositorios publicos son suficientes para este laboratorio. No incluyas nunca en una imagen:
+
+- Contraseñas de RDS.
+- Tokens de Docker Hub.
+- Claves privadas.
+- Archivos `.env`.
+- Credenciales de AWS.
+
+Las credenciales se entregaran al contenedor mediante variables de entorno durante el despliegue, no durante el build de la imagen.
+
+### 2.5 Crear el Access Token
+
+No uses tu contraseña de Docker Hub en GitHub Actions. Crea un token exclusivo para este laboratorio:
+
+1. Selecciona tu avatar en Docker Hub.
 2. Entra a **Account settings**.
-3. Abre **Personal access tokens**.
+3. Busca **Personal access tokens** o **Access tokens**.
 4. Selecciona **Generate new token**.
-5. Dale un nombre, por ejemplo `github-actions-cicd-lab`.
-6. Usa permiso **Read & Write**.
-7. Copia el token inmediatamente.
+5. En **Description**, escribe:
 
-El token se muestra una sola vez. No lo guardes en el repositorio.
+   ```text
+   github-actions-cicd-lab
+   ```
+
+6. Si Docker Hub solicita una fecha de expiracion, elige una fecha cercana al final del laboratorio.
+7. Selecciona el permiso minimo que permita publicar imagenes:
+   - `Read & Write`, o
+   - `Image: Read & Write`, segun la pantalla mostrada.
+8. No selecciones permisos de administracion de la cuenta.
+9. Selecciona **Generate**.
+10. Copia el token en un administrador de contraseñas o en un lugar temporal seguro.
+
+El token solo se muestra una vez. Si lo pierdes, revocalo y genera uno nuevo. No lo pegues en:
+
+- El codigo fuente.
+- `ci.yml`.
+- `cd.yml`.
+- Un archivo `.env` que vaya a GitHub.
+- Un mensaje de commit.
+- Una captura de pantalla.
+
+### 2.6 Resultado que debes tener antes de continuar
+
+Al finalizar esta fase debes conocer solamente estos dos datos:
+
+```text
+DOCKERHUB_USERNAME = yersonhtm
+DOCKERHUB_TOKEN    = el token recien creado
+```
+
+El token no se escribe aun en ningun archivo. En la Fase 6 se guardara como un **GitHub Actions secret**.
+
+Usa esta comprobacion visual:
+
+| Comprobacion | Resultado esperado |
+|---|---|
+| Cuenta | Puedes iniciar sesion en Docker Hub |
+| Docker ID | Identificado exactamente |
+| Repositorio `frontend` | Existe, es publico y esta vacio |
+| Repositorio `backend` | Existe, es publico y esta vacio |
+| Repositorio `database` | Existe, es publico y esta vacio |
+| Token | Creado y guardado de forma segura |
+| Codigo fuente | No contiene el token |
+
+No avances a la Fase 3 hasta tener los tres repositorios creados. No necesitas ejecutar `docker login` en tu computador: el login se hara desde GitHub Actions usando el secret.
 
 ---
 
@@ -247,13 +363,59 @@ El puerto 80 ya debe estar permitido desde `alb-sg`.
 
 ### 4.2 Backend
 
-Conectate a `cicd-lab-backend` y ejecuta:
+El backend esta en una subnet privada y no tiene IPv4 publica. No intentes usar **EC2 Instance Connect** desde el navegador para esta instancia.
+
+Primero agrega temporalmente en `backend-sg` esta regla:
+
+| Type | Port | Source |
+|---|---:|---|
+| SSH | `22` | `runner-sg` |
+
+No uses `0.0.0.0/0` como origen.
+
+Desde tu computador, copia temporalmente la clave `.pem` a la EC2 runner usando la IPv4 publica de la runner:
+
+```powershell
+scp -i "C:\ruta\laboratorio.pem" "C:\ruta\laboratorio.pem" ubuntu@IP_PUBLICA_RUNNER:/home/ubuntu/backend-key.pem
+```
+
+Si Windows muestra `Bad permissions` o `UNPROTECTED PRIVATE KEY FILE`, corrige los permisos de la clave antes de repetir el comando:
+
+```powershell
+$Key = "C:\ruta\laboratorio.pem"
+icacls $Key /inheritance:r
+icacls $Key /remove "BUILTIN\Usuarios"
+icacls $Key /remove "BUILTIN\Users"
+icacls $Key /remove "NT AUTHORITY\Authenticated Users"
+icacls $Key /grant:r "$($env:USERNAME):(R)"
+icacls $Key
+```
+
+La salida debe dejar la clave accesible para tu usuario y no para grupos generales ni para `Authenticated Users`.
+
+En la terminal de `cicd-lab-runner`, protege la clave:
+
+```bash
+chmod 400 ~/backend-key.pem
+```
+
+Desde esa misma terminal, conecta usando la IP privada de `cicd-lab-backend`:
+
+```bash
+ssh -i ~/backend-key.pem ubuntu@IP_PRIVADA_BACKEND
+```
+
+Acepta la huella con `yes` solamente si la IP privada corresponde a tu instancia backend.
+
+Ya dentro del backend, ejecuta:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y docker.io
 sudo systemctl enable --now docker
 ```
+
+La clave no debe subirse al repositorio ni pegarse en un workflow. Mas adelante CD usara una copia protegida mediante un GitHub Actions secret.
 
 El puerto 5000 debe estar permitido solamente desde `frontend-sg`.
 
@@ -291,11 +453,48 @@ Valores esperados en AWS:
 DB_HOST=cicd-lab-postgres.cyx26me4q2u8.us-east-1.rds.amazonaws.com
 DB_PORT=5432
 DB_NAME=saludos_db
-DB_USER=usuario-creado-en-RDS
+DB_USER=saludos_admin
 DB_PASSWORD=contraseña-de-RDS
 ```
 
-La contraseña nunca debe escribirse en el codigo ni en un workflow.
+Estos nombres son variables que el contenedor recibira durante el despliegue. No son nombres de archivos ni columnas de la base de datos.
+
+La contraseña nunca debe escribirse en el codigo, en un workflow, en Docker Hub ni en un commit.
+
+#### Donde crear estos valores
+
+Se crearan como **Repository secrets de GitHub Actions**:
+
+1. Abre tu repositorio propio en GitHub.
+2. Selecciona **Settings**.
+3. En el menu izquierdo entra a **Secrets and variables**.
+4. Selecciona **Actions**.
+5. En la pestaña **Secrets**, selecciona **New repository secret**.
+6. Crea uno por uno:
+
+   ```text
+   DB_HOST
+   DB_PORT
+   DB_NAME
+   DB_USER
+   DB_PASSWORD
+   ```
+
+7. En cada formulario escribe el valor real y selecciona **Add secret**.
+
+Usa los valores definidos al crear RDS:
+
+| Secret | Valor |
+|---|---|
+| `DB_HOST` | Endpoint de RDS, sin `http://` |
+| `DB_PORT` | `5432` |
+| `DB_NAME` | `saludos_db` |
+| `DB_USER` | `saludos_admin` |
+| `DB_PASSWORD` | Contraseña maestra de RDS |
+
+GitHub no volvera a mostrar el valor de un secret despues de guardarlo. Verifica cada valor antes de seleccionar **Add secret**.
+
+No debes crear estos valores en **Docker Hub** ni guardarlos en un archivo `.env` que se suba a GitHub. El workflow los recibira como secrets y CD los pasara al contenedor con `-e`.
 
 ### 5.2 Frontend: usar el DNS privado del backend
 
@@ -342,7 +541,7 @@ Crea estos secrets:
 
 | Nombre | Valor |
 |---|---|
-| `DOCKERHUB_USERNAME` | Tu usuario de Docker Hub |
+| `DOCKERHUB_USERNAME` | `yersonhtm` |
 | `DOCKERHUB_TOKEN` | Token de Docker Hub |
 | `DB_HOST` | Endpoint de RDS |
 | `DB_PORT` | `5432` |
@@ -369,20 +568,284 @@ No subas ese archivo al repositorio. GitHub debe mostrar el secret como configur
 
 ### Acceso de red para CD
 
-El runner debe poder conectarse por SSH a frontend y backend:
+Para que CD pueda desplegar, el runner debe conectarse por SSH a las dos EC2 usando sus IP privadas:
 
 ```text
-runner → frontend:22
-runner → backend:22
+runner → IP privada frontend:22
+runner → IP privada backend:22
 ```
 
-No abras SSH a `0.0.0.0/0`. Usa el Security Group del runner como origen si las reglas de AWS lo permiten, o la IP privada del runner para este laboratorio.
+#### Regla SSH en `frontend-sg`
+
+1. Abre **EC2 → Security Groups**.
+2. Selecciona `frontend-sg`.
+3. Abre **Inbound rules**.
+4. Selecciona **Edit inbound rules**.
+5. Selecciona **Add rule**.
+6. Configura:
+
+   ```text
+   Type: SSH
+   Protocol: TCP
+   Port: 22
+   Source: Custom
+   Source value: ID de runner-sg
+   ```
+
+7. Guarda con **Save rules**.
+
+#### Regla SSH en `backend-sg`
+
+Repite el mismo procedimiento seleccionando `backend-sg`:
+
+```text
+Type: SSH
+Protocol: TCP
+Port: 22
+Source: ID de runner-sg
+```
+
+En ambos casos selecciona el ID del Security Group `runner-sg`, no el nombre escrito manualmente y no `0.0.0.0/0`.
+
+La regla final debe permitir:
+
+```text
+runner-sg → frontend:22
+runner-sg → backend:22
+```
+
+El **Outbound** de `runner-sg` debe permitir el trafico necesario, normalmente:
+
+```text
+All traffic → 0.0.0.0/0
+```
+
+#### Verificar las reglas en AWS
+
+En cada instancia:
+
+1. Abre **EC2 → Instances**.
+2. Selecciona la instancia.
+3. Abre la pestaña **Security**.
+4. Confirma que el Security Group asociado sea el correcto:
+   - Frontend: `frontend-sg`.
+   - Backend: `backend-sg`.
+   - Runner: `runner-sg`.
+
+En la pestaña **Networking**, copia las IP privadas de frontend y backend. No uses las IP publicas para CD.
+
+#### Probar desde la runner
+
+Desde la terminal de la EC2 runner prueba primero los puertos:
+
+```bash
+nc -vz IP_PRIVADA_FRONTEND 22
+nc -vz IP_PRIVADA_BACKEND 22
+```
+
+El resultado esperado es:
+
+```text
+succeeded
+```
+
+Si `nc` no esta instalado:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y netcat-openbsd
+```
+
+Despues prueba la autenticacion SSH:
+
+```bash
+ssh -i ~/backend-key.pem ubuntu@IP_PRIVADA_FRONTEND
+ssh -i ~/backend-key.pem ubuntu@IP_PRIVADA_BACKEND
+```
+
+La clave debe corresponder al key pair con el que se creo cada instancia. Si frontend y backend usan key pairs diferentes, usa la clave correspondiente en cada comando.
+
+No abras SSH a `0.0.0.0/0`. La regla temporal de EC2 Instance Connect (`18.206.107.24/29`) es diferente y no reemplaza el acceso del runner.
 
 ---
 
 ## Fase 7: Configurar CI
 
 El CI debe construir las imagenes en un mismo job o repetir el checkout y la construccion en cada job. Los archivos e imagenes de un job no aparecen automaticamente en otro runner.
+
+### 7.1 Confirmar los requisitos del runner
+
+Antes de modificar el workflow, entra por EC2 Instance Connect a `cicd-lab-runner` y comprueba:
+
+```bash
+docker version
+git --version
+sudo systemctl is-active docker
+```
+
+Los resultados esperados son:
+
+```text
+Docker version ...
+git version ...
+active
+```
+
+Si Docker no esta activo:
+
+```bash
+sudo systemctl enable --now docker
+```
+
+El runner debe aparecer como `Idle` en:
+
+```text
+Repositorio → Settings → Actions → Runners
+```
+
+No continues si aparece como `Offline`.
+
+### 7.2 Confirmar los secrets de CI
+
+En:
+
+```text
+Repositorio → Settings → Secrets and variables → Actions → Secrets
+```
+
+confirma que existan:
+
+```text
+DOCKERHUB_USERNAME
+DOCKERHUB_TOKEN
+```
+
+El valor de `DOCKERHUB_USERNAME` debe ser:
+
+```text
+yersonhtm
+```
+
+El valor de `DOCKERHUB_TOKEN` debe ser el Access Token de Docker Hub con permiso de lectura y escritura.
+
+No agregues los valores directamente al archivo YAML. El workflow los recibe mediante `secrets`.
+
+### 7.3 Revisar el workflow del repositorio
+
+El archivo que se ejecutara es:
+
+```text
+.github/workflows/ci.yml
+```
+
+Debe contener un solo job principal con este orden:
+
+```text
+checkout
+  → comprobar Docker
+  → ejecutar pruebas backend
+  → configurar Buildx
+  → iniciar sesion en Docker Hub
+  → construir y publicar frontend
+  → construir y publicar backend
+  → construir y publicar database
+```
+
+Se usa un solo job porque los archivos del checkout y las imagenes locales no se comparten automaticamente entre jobs que usan runners separados.
+
+El workflow del repositorio ya usa:
+
+```text
+Runner: self-hosted
+Usuario Docker Hub: yersonhtm
+Tag inmutable: github.sha
+Tag adicional: latest
+```
+
+Las imagenes publicadas seran:
+
+```text
+yersonhtm/frontend:SHA_DEL_COMMIT
+yersonhtm/backend:SHA_DEL_COMMIT
+yersonhtm/database:SHA_DEL_COMMIT
+```
+
+### 7.4 Revisar el cambio del backend
+
+El archivo `github/backend/app.py` debe leer:
+
+```python
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+```
+
+No debe contener:
+
+```python
+host="database"
+```
+
+ni una contraseña escrita directamente.
+
+El endpoint `/health` no consulta RDS, por lo que puede usarse para comprobar que Flask arranco. El endpoint `/saludo` si consulta RDS y requiere que CD entregue correctamente las variables de base de datos.
+
+### 7.5 Ejecutar el primer CI
+
+Desde PowerShell, ubicado en la carpeta del repositorio local, revisa los cambios:
+
+```powershell
+git status
+git diff --check
+```
+
+Agrega y publica los cambios:
+
+```powershell
+git add .github/workflows/ci.yml github/backend/app.py github/frontend/nginx.conf
+git commit -m "Prepare CI images for AWS deployment"
+git push origin main
+```
+
+### 7.6 Seguir la ejecucion en GitHub
+
+1. Abre tu repositorio.
+2. Selecciona **Actions**.
+3. Selecciona **Continuous Integration**.
+4. Abre la ejecucion mas reciente.
+5. Abre el job **Test, build and publish images**.
+
+Comprueba los pasos en este orden:
+
+1. `Checkout`: termina en verde.
+2. `Check Docker`: muestra la version de Docker.
+3. `Run backend tests`: muestra los tests exitosos.
+4. `Set up Docker Buildx`: termina en verde.
+5. `Log in to Docker Hub`: termina en verde sin mostrar el token.
+6. `Build and push frontend`: termina en verde.
+7. `Build and push backend`: termina en verde.
+8. `Build and push database`: termina en verde.
+
+Si un paso falla, no avances a CD. Abre ese paso y usa su mensaje exacto para corregirlo.
+
+### 7.7 Confirmar las imagenes en Docker Hub
+
+En Docker Hub abre:
+
+```text
+yersonhtm/frontend
+yersonhtm/backend
+yersonhtm/database
+```
+
+Cada repositorio debe tener:
+
+- Un tag largo igual al SHA del commit.
+- El tag `latest`.
+
+El SHA se puede consultar en GitHub en el commit que disparo el workflow.
 
 El flujo minimo es:
 
@@ -398,15 +861,15 @@ checkout
 Usa el SHA del commit como tag inmutable:
 
 ```text
-TU_DOCKERHUB_USER/frontend:${{ github.sha }}
-TU_DOCKERHUB_USER/backend:${{ github.sha }}
+yersonhtm/frontend:${{ github.sha }}
+yersonhtm/backend:${{ github.sha }}
 ```
 
 No dependas unicamente de `latest`.
 
 ### Verificacion de CI
 
-Haz un cambio pequeno en `github/frontend/index.html`, por ejemplo un texto visible, y ejecuta:
+Para una segunda prueba, haz un cambio pequeno en `github/frontend/index.html`, por ejemplo un texto visible, y ejecuta:
 
 ```bash
 git add .
@@ -453,7 +916,7 @@ docker run -d \
   -e DB_NAME="$DB_NAME" \
   -e DB_USER="$DB_USER" \
   -e DB_PASSWORD="$DB_PASSWORD" \
-  TU_DOCKERHUB_USER/backend:TAG
+  yersonhtm/backend:TAG
 ```
 
 Validacion:
@@ -473,7 +936,7 @@ docker run -d \
   --name frontend \
   --restart unless-stopped \
   -p 80:80 \
-  TU_DOCKERHUB_USER/frontend:TAG
+  yersonhtm/frontend:TAG
 ```
 
 Validacion:
