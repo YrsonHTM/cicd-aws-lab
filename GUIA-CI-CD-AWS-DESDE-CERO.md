@@ -957,6 +957,32 @@ curl http://localhost:5000/health
 
 Debe responder con un estado exitoso.
 
+### Inicializar la tabla de RDS mediante CD
+
+La imagen `database` se construye para CI y desarrollo, pero CD no la ejecuta en AWS. El workflow CD ejecuta directamente `github/db/init.sql` contra RDS antes de iniciar el backend.
+
+El script es idempotente: crea la tabla `saludos` si no existe e inserta los mensajes iniciales solo cuando la tabla esta vacia. Si RDS rechaza la conexion o el SQL falla, CD falla y no continua con el despliegue.
+
+No es necesario ejecutar SQL manualmente en la EC2 backend. CD usa estos GitHub Secrets:
+
+```text
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+```
+
+CD copia temporalmente `github/db/init.sql` a la EC2 backend y usa `postgres:16-alpine` como cliente para ejecutarlo. El script y el contenedor temporal se eliminan al terminar; RDS conserva los datos.
+
+Comprueba desde la EC2 backend:
+
+```bash
+curl http://localhost:5000/saludo
+```
+
+La respuesta debe contener una propiedad `mensaje`. Luego actualiza la pagina del ALB y pulsa **Obtener saludo**.
+
 ### Despliegue del frontend
 
 El contenedor debe publicarse en el puerto 80:

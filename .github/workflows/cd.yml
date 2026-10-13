@@ -30,6 +30,11 @@ jobs:
     runs-on: self-hosted
 
     steps:
+      - name: Checkout approved commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
       - name: Prepare SSH key
         shell: bash
         env:
@@ -52,6 +57,11 @@ jobs:
           DB_NAME=$DB_NAME
           DB_USER=$DB_USER
           DB_PASSWORD=$DB_PASSWORD
+          PGHOST=$DB_HOST
+          PGPORT=$DB_PORT
+          PGDATABASE=$DB_NAME
+          PGUSER=$DB_USER
+          PGPASSWORD=$DB_PASSWORD
           EOF
 
           chmod 600 "$RUNNER_TEMP/backend.env"
@@ -62,12 +72,24 @@ jobs:
             "$RUNNER_TEMP/backend.env" \
             "ubuntu@$BACKEND_HOST:/tmp/cicd-backend.env"
 
+          scp -q \
+            -o StrictHostKeyChecking=accept-new \
+            -i "$RUNNER_TEMP/deploy_key" \
+            github/db/init.sql \
+            "ubuntu@$BACKEND_HOST:/tmp/cicd-init.sql"
+
           ssh \
             -o StrictHostKeyChecking=accept-new \
             -i "$RUNNER_TEMP/deploy_key" \
             "ubuntu@$BACKEND_HOST" \
             "IMAGE_TAG='$IMAGE_TAG' DOCKERHUB_USERNAME='$DOCKERHUB_USERNAME' bash -s" <<'REMOTE_SCRIPT'
           set -euo pipefail
+          trap 'rm -f /tmp/cicd-backend.env /tmp/cicd-init.sql' EXIT
+
+          sudo docker run --rm -i \
+            --env-file /tmp/cicd-backend.env \
+            postgres:16-alpine \
+            psql -v ON_ERROR_STOP=1 < /tmp/cicd-init.sql
 
           sudo docker pull "$DOCKERHUB_USERNAME/backend:$IMAGE_TAG"
           sudo docker rm -f backend 2>/dev/null || true
@@ -78,7 +100,6 @@ jobs:
             --env-file /tmp/cicd-backend.env \
             "$DOCKERHUB_USERNAME/backend:$IMAGE_TAG"
 
-          rm -f /tmp/cicd-backend.env
           for attempt in $(seq 1 15); do
             if sudo docker exec backend python -c \
               "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)" \
