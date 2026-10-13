@@ -889,7 +889,35 @@ En GitHub abre **Actions** y confirma:
 
 ## Fase 8: Configurar CD
 
-El CD se ejecuta solo despues de un CI exitoso.
+El archivo que ejecuta el despliegue es:
+
+```text
+.github/workflows/cd.yml
+```
+
+El CD se ejecuta solo despues de un CI exitoso sobre la rama `main`. Usa el SHA del commit que termino correctamente en CI, no `latest`, para que frontend y backend correspondan a la misma version.
+
+Antes de hacer el primer push que dispare CD, confirma que existan estos secrets:
+
+```text
+FRONTEND_HOST
+BACKEND_HOST
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+SSH_PRIVATE_KEY
+```
+
+Usa como hosts las IP privadas:
+
+```text
+FRONTEND_HOST=10.0.1.216
+BACKEND_HOST=10.0.11.25
+```
+
+`SSH_PRIVATE_KEY` debe ser la clave que permite conectarse como `ubuntu` a las dos EC2. Si frontend y backend fueron creados con key pairs diferentes, este workflow requiere una adaptacion para recibir una clave por instancia.
 
 Para cada EC2, el despliegue debe:
 
@@ -901,6 +929,8 @@ Para cada EC2, el despliegue debe:
 6. Iniciar el nuevo contenedor.
 7. Comprobar el endpoint local.
 8. Fallar si la comprobacion no es exitosa.
+
+El CD no despliega la imagen `database` en AWS. La persistencia del ambiente AWS es RDS PostgreSQL.
 
 ### Despliegue del backend
 

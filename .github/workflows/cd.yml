@@ -1,13 +1,132 @@
 name: Continuous Deployment
 
 on:
-    workflow_run:
-    workflows: ["Continuous Integration"]
-    types: [completed]
+  workflow_run:
+    workflows:
+      - Continuous Integration
+    types:
+      - completed
+
+concurrency:
+  group: aws-production-deployment
+  cancel-in-progress: false
+
+env:
+  DOCKERHUB_USERNAME: yersonhtm
+  FRONTEND_HOST: ${{ secrets.FRONTEND_HOST }}
+  BACKEND_HOST: ${{ secrets.BACKEND_HOST }}
+  DB_HOST: ${{ secrets.DB_HOST }}
+  DB_PORT: ${{ secrets.DB_PORT }}
+  DB_NAME: ${{ secrets.DB_NAME }}
+  DB_USER: ${{ secrets.DB_USER }}
+  DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
 
 jobs:
+  deploy:
+    name: Deploy backend and frontend
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: self-hosted
 
-  pull:
-    name: Pull
-    runs-on: [self-hosted]
-    
+    steps:
+      - name: Prepare SSH key
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy_key"
+          chmod 600 "$RUNNER_TEMP/deploy_key"
+
+      - name: Deploy backend
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          cat > "$RUNNER_TEMP/backend.env" <<EOF
+          DB_HOST=$DB_HOST
+          DB_PORT=$DB_PORT
+          DB_NAME=$DB_NAME
+          DB_USER=$DB_USER
+          DB_PASSWORD=$DB_PASSWORD
+          EOF
+
+          chmod 600 "$RUNNER_TEMP/backend.env"
+
+          scp -q \
+            -o StrictHostKeyChecking=accept-new \
+            -i "$RUNNER_TEMP/deploy_key" \
+            "$RUNNER_TEMP/backend.env" \
+            "ubuntu@$BACKEND_HOST:/tmp/cicd-backend.env"
+
+          ssh \
+            -o StrictHostKeyChecking=accept-new \
+            -i "$RUNNER_TEMP/deploy_key" \
+            "ubuntu@$BACKEND_HOST" \
+            "IMAGE_TAG='$IMAGE_TAG' DOCKERHUB_USERNAME='$DOCKERHUB_USERNAME' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          sudo docker pull "$DOCKERHUB_USERNAME/backend:$IMAGE_TAG"
+          sudo docker rm -f backend 2>/dev/null || true
+          sudo docker run -d \
+            --name backend \
+            --restart unless-stopped \
+            -p 5000:5000 \
+            --env-file /tmp/cicd-backend.env \
+            "$DOCKERHUB_USERNAME/backend:$IMAGE_TAG"
+
+          rm -f /tmp/cicd-backend.env
+          for attempt in $(seq 1 15); do
+            if sudo docker exec backend python -c \
+              "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)" \
+              >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          sudo docker logs backend
+          exit 1
+          REMOTE_SCRIPT
+
+      - name: Deploy frontend
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -o StrictHostKeyChecking=accept-new \
+            -i "$RUNNER_TEMP/deploy_key" \
+            "ubuntu@$FRONTEND_HOST" \
+            "IMAGE_TAG='$IMAGE_TAG' DOCKERHUB_USERNAME='$DOCKERHUB_USERNAME' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          sudo docker pull "$DOCKERHUB_USERNAME/frontend:$IMAGE_TAG"
+          sudo docker rm -f frontend 2>/dev/null || true
+          sudo docker run -d \
+            --name frontend \
+            --restart unless-stopped \
+            -p 80:80 \
+            "$DOCKERHUB_USERNAME/frontend:$IMAGE_TAG"
+
+          for attempt in $(seq 1 15); do
+            if sudo docker exec frontend wget -qO- http://127.0.0.1/ >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          sudo docker logs frontend
+          exit 1
+          REMOTE_SCRIPT
+
+      - name: Remove temporary SSH key
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/backend.env"
