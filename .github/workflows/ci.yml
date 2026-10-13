@@ -29,6 +29,7 @@ jobs:
             -v "$PWD/github/backend:/app" \
             -w /app \
             -e PYTHONPATH=/app \
+            -e PYTHONDONTWRITEBYTECODE=1 \
             python:3.12-slim \
             sh -c "pip install --no-cache-dir -r requirements.txt && pytest -p no:cacheprovider"
 
